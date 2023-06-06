@@ -4,87 +4,93 @@
 //
 //  Created by Hojin Moon on 6/6/23.
 //
-
+import MapKit
 import SwiftUI
-import CoreData
+import CoreLocation
 
 struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: true)],
-        animation: .default)
-    private var items: FetchedResults<Item>
-
+    @ObservedObject private var viewModel = ContentViewModel()
+    
     var body: some View {
-        NavigationView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp!, formatter: itemFormatter)")
-                    } label: {
-                        Text(item.timestamp!, formatter: itemFormatter)
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
-            Text("Select an item")
+        VStack {
+            Map(coordinateRegion: $viewModel.region,
+                interactionModes: .all,
+                showsUserLocation: true)
+                .ignoresSafeArea()
+            
+            Text("Speed: \(viewModel.speed, specifier: "%.2f") m/s")
+                .font(.title)
+                .padding()
         }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            offsets.map { items[$0] }.forEach(viewContext.delete)
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
+        .onAppear {
+            viewModel.checkIfLocationServicesIsEnabled()
         }
     }
 }
 
-private let itemFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .medium
-    return formatter
-}()
-
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
-        ContentView().environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+        ContentView()
+    }
+}
+
+final class ContentViewModel: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var region: MKCoordinateRegion = MKCoordinateRegion()
+    @Published var userLocation: CLLocation?
+    @Published var speed: CLLocationSpeed = 0.0
+
+    var locationManager: CLLocationManager?
+
+    func checkIfLocationServicesIsEnabled() {
+        if CLLocationManager.locationServicesEnabled() {
+            locationManager = CLLocationManager()
+            locationManager?.delegate = self
+            locationManager?.requestWhenInUseAuthorization()
+            locationManager?.startUpdatingLocation()
+        } else {
+            print("Location Services Not Available By User")
+        }
+    }
+
+    private func setupRegionWithUserLocation(_ location: CLLocation) {
+        let span = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        region = MKCoordinateRegion(center: location.coordinate, span: span)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        userLocation = location
+        setupRegionWithUserLocation(location)
+        
+        if location.speed >= 0 {
+            speed = location.speed
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        checkLocationAuthorization()
+    }
+    private func checkLocationAuthorization() {
+        guard let locationManager = locationManager else { return }
+
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .restricted:
+            print("Your Location is Restricted")
+        case .denied:
+            print("You denied permission to use your location. Please go into the settings app to allow location for the app's operation to continue")
+        case .authorizedAlways, .authorizedWhenInUse:
+            if let location = locationManager.location {
+                userLocation = location
+                _ = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                setupRegionWithUserLocation(location)
+                locationManager.startUpdatingLocation()
+            } else {
+                locationManager.requestLocation()
+            }
+        @unknown default:
+            break
+        }
     }
 }
